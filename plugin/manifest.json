@@ -1,0 +1,14 @@
+{
+  "name": "Scalar (Beta)",
+  "id": "scalar-design-token-exporter",
+  "api": "1.0.0",
+  "main": "dist/sandbox/main.js",
+  "ui": "dist/ui/index.html",
+  "editorType": ["figma", "dev"],
+  "documentAccess": "dynamic-page",
+  "capabilities": [],
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "reasoning": "v1 exports locally (download / clipboard). No network access needed."
+  }
+}

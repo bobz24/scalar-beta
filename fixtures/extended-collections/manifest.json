@@ -1,0 +1,16 @@
+{
+  "name": "Scalar Fixture — Extended Collections",
+  "id": "scalar-ext-collections-fixture",
+  "api": "1.0.0",
+  "main": "code.js",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"],
+    "reasoning": "Throwaway test fixture — builds synthetic data and logs to the console only."
+  },
+  "menu": [
+    { "name": "1. Build parent fixture", "command": "build" },
+    { "name": "2. Dump collections + variables", "command": "dump" }
+  ]
+}
