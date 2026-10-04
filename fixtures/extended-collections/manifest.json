@@ -1,16 +1,18 @@
 {
-  "name": "Scalar Fixture — Extended Collections",
-  "id": "scalar-ext-collections-fixture",
+  "name": "Scalar Fixture v2 — Extended Collections",
+  "id": "scalar-ext-collections-fixture-v2",
   "api": "1.0.0",
   "main": "code.js",
+  "ui": "ui.html",
   "editorType": ["figma"],
   "documentAccess": "dynamic-page",
+  "permissions": ["teamlibrary"],
   "networkAccess": {
     "allowedDomains": ["none"],
-    "reasoning": "Throwaway test fixture — builds synthetic data and logs to the console only."
+    "reasoning": "Throwaway test fixture — builds synthetic data and shows the results in a local panel only."
   },
   "menu": [
-    { "name": "1. Build parent fixture", "command": "build" },
-    { "name": "2. Dump collections + variables", "command": "dump" }
+    { "name": "1. Run main test", "command": "main" },
+    { "name": "B. Remote parent (optional, in a second file)", "command": "partb" }
   ]
 }

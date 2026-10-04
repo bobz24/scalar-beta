@@ -1,43 +1,41 @@
-# Scalar fixture — Extended Collections
+# Scalar Fixture v2 — Extended Collections
 
-10-minute favor. Synthetic data only — no real design-system content. **Run in a new,
-empty Figma file**, not a production one.
+**Requires a Figma Enterprise plan.** On any other plan the plugin stops with a message —
+send that message back, it is a useful result.
 
-## Steps
+Synthetic data only. Use new, empty Figma files — never a production file. Run each part
+**once per new file**; to re-run, start a new file.
 
-1. **Import:** `Plugins → Development → Import plugin from manifest…` → select
+## Part A — required (~5 min)
+
+1. **Remove the old fixture** (if you ran an earlier version): `Plugins → Development →
+   Manage plugins in development` → find **Scalar Fixture — Extended Collections** (no
+   "v2") → `…` → **Remove**. If it isn't listed, skip this step.
+2. **Import:** `Plugins → Development → Import plugin from manifest…` → select
    `manifest.json` in this folder.
-2. **Open the console first:** `Plugins → Development → Open Console`.
-3. **Run:** `Plugins → Development → Scalar Fixture — Extended Collections →
-   1. Build parent fixture`.
-   Creates collection `ExtColl Parent`, modes `Light`/`Dark`, 9 variables.
-4. **Extend it, by hand, in Figma's UI** (not scripted — on purpose, see "Why" below):
-   right-click `ExtColl Parent` in the Local variables panel → the menu option to extend
-   it into a new collection (label differs by Figma version — look for wording like
-   "Extend collection" or "New extension"). Name the new collection `Acme`.
-   - **If you don't see that option at all**, stop and tell me — that itself is a
-     useful result (means this Figma plan/version can't create one via UI either).
-5. **In `Acme`, set exactly these overrides** (leave everything else untouched/inherited):
+3. **Open a new, empty file** (call it File 1).
+4. **Run:** `Plugins → Development → Scalar Fixture v2 — Extended Collections →
+   1. Run main test`. Make sure the name says **v2**. It builds two collections and four
+   extensions, then tests them. This takes a few seconds.
+5. **A panel opens** with the results. Click **Download extcoll-fixture-partA.json**
+   (or **Copy results** and paste into a text file).
+6. **Run the real Scalar plugin** on File 1 and export. Keep its report and output files
+   (or the ZIP).
+7. **Send back:** the file from step 5, plus Scalar's report and files from step 6.
 
-   | Variable | Override |
-   |---|---|
-   | `color/semantic/accent` | Light mode only → any raw color (e.g. `#FF6B00`); leave Dark inherited |
-   | `space/medium` | `12` |
-   | `radius/button` | `6` |
-   | `brand/name` | `"Acme"` |
+A ✗ in the panel's list is fine. Send the results as they are.
 
-6. **Run:** `Plugins → Development → Scalar Fixture — Extended Collections →
-   2. Dump collections + variables`.
-7. **Copy from the console:** everything between the lines
-   `FIXTURE_DUMP_START:EXTENDED_COLLECTIONS` and `FIXTURE_DUMP_END:EXTENDED_COLLECTIONS`.
-   Paste into a text file.
-8. **Run the real Scalar plugin** on the same file. Export. Keep its report + output
-   files (or the ZIP).
-9. **Send back two files:** the step-7 dump, and the step-8 Scalar output/report.
+## Part B — optional (~10 min; needs permission to publish a library)
 
-## Why step 4 is manual, not scripted
+Do Part A first, in File 1.
 
-Whether the Figma Plugin API can create an extension at all is unconfirmed — this
-fixture exists partly to find out. Scripting a guess at a nonexistent method would just
-fail. Doing it by hand in Figma's own UI is the reliable path, and the step 6 dump will
-show whatever extension data Figma exposes on a collection made that way.
+1. **In File 1,** publish it as a library (`Assets` panel → `Libraries` icon →
+   `Publish`). The `ExtColl Parent` variable collection must be included.
+2. **Open a second new, empty file** (File 2).
+3. **In File 2,** turn on the library from File 1 (`Assets` panel → `Libraries` icon).
+4. **In File 2, run:** `Plugins → Development → Scalar Fixture v2 — Extended Collections →
+   B. Remote parent (optional, in a second file)`.
+5. **Download** `extcoll-fixture-partB.json` and send it back.
+
+If your Figma's menu labels differ, any route that publishes File 1 as a team library and
+turns it on in File 2 works.

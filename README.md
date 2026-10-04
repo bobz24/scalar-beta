@@ -14,8 +14,9 @@ anything that breaks or confuses you is useful.
 
 ## 2. Extended Collections fixture (if you have Enterprise access)
 
-Separate, smaller test — see [`fixtures/extended-collections/README.md`](fixtures/extended-collections/README.md)
-for exact steps (~10 min, synthetic data only, run in a throwaway Figma file).
+Separate, smaller test, now **v2** — see [`fixtures/extended-collections/README.md`](fixtures/extended-collections/README.md)
+for exact steps (~5 min, synthetic data only, run in a new empty Figma file). If you
+installed the earlier version, remove it first (step 1 of that README).
 
 ## 3. Send back results — via PR, not email/Slack
 
@@ -28,8 +29,9 @@ results/<your-name>/
   notes.md            # anything that felt off, broke, or was confusing
 ```
 
-For the Extended Collections fixture, also include the console dump
-(`results/<your-name>/extended-collections-dump.txt`).
+For the Extended Collections fixture, also include the file(s) the fixture's panel
+downloads: `extcoll-fixture-partA.json`, and `extcoll-fixture-partB.json` if you ran
+Part B.
 
 A PR keeps everything in one reviewable, private place instead of scattered email
 attachments — comment threads on the PR work fine for back-and-forth too.

@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  body { font: 12px/1.45 Inter, system-ui, sans-serif; margin: 0; padding: 12px; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); }
+  h1 { font-size: 13px; margin: 0 0 8px; }
+  #blocker { display: none; padding: 8px; margin-bottom: 8px; border: 1px solid var(--figma-color-border, #bbb); border-radius: 4px; }
+  #probes { margin: 0 0 8px; padding: 0; list-style: none; max-height: 150px; overflow: auto; font: 11px ui-monospace, Menlo, monospace; }
+  textarea { width: 100%; height: 200px; box-sizing: border-box; font: 11px ui-monospace, Menlo, monospace; }
+  button { margin: 8px 6px 0 0; }
+</style>
+<h1 id="title">Scalar Fixture v2 — running…</h1>
+<div id="blocker"></div>
+<div id="status">Running probes. This can take a few seconds.</div>
+<ul id="probes"></ul>
+<textarea id="out" readonly hidden></textarea>
+<div>
+  <button id="copy" disabled>Copy results</button>
+  <button id="dl" disabled>Download results.json</button>
+  <button id="close">Close</button>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let json = '';
+  let fileName = 'extcoll-fixture-results.json';
+
+  onmessage = (e) => {
+    const m = e.data && e.data.pluginMessage;
+    if (!m || m.type !== 'results') return;
+    json = m.json;
+    fileName = m.label.indexOf('Part B') === 0 ? 'extcoll-fixture-partB.json' : 'extcoll-fixture-partA.json';
+    $('dl').textContent = 'Download ' + fileName;
+    $('title').textContent = 'Scalar Fixture v2 — ' + m.label;
+    const okCount = m.summary.filter((p) => p.ok).length;
+    $('status').textContent =
+      okCount + ' of ' + m.summary.length + ' probes succeeded. A failed probe is useful data — send it too.';
+    if (m.blocker) {
+      $('blocker').textContent = m.blocker + ' Send the results file anyway.';
+      $('blocker').style.display = 'block';
+    }
+    const ul = $('probes');
+    ul.textContent = '';
+    for (const p of m.summary) {
+      const li = document.createElement('li');
+      li.textContent = (p.ok ? '✓ ' : '✗ ') + p.name;
+      ul.appendChild(li);
+    }
+    $('out').value = json;
+    $('out').hidden = false;
+    $('copy').disabled = false;
+    $('dl').disabled = false;
+  };
+
+  // Copy via execCommand: the plugin iframe has no async clipboard access (same reason Scalar does this).
+  $('copy').onclick = () => {
+    $('out').select();
+    document.execCommand('copy');
+    $('copy').textContent = 'Copied';
+  };
+
+  $('dl').onclick = () => {
+    const blob = new Blob([json], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  $('close').onclick = () => parent.postMessage({ pluginMessage: { type: 'close' } }, '*');
+  parent.postMessage({ pluginMessage: { type: 'ready' } }, '*');
+</script>
