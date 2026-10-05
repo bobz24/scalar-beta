@@ -1,36 +1,44 @@
-// Scalar fixture v2: Extended Collections (issue #88)
+// Scalar fixture v3: Extended Collections (issue #88)
 //
 // Throwaway plugin that builds synthetic data, probes how Figma's Extended Collections
 // behave, and hands the results back in a panel (Copy / Download) — no console needed.
 // All names are generic; nothing from a real design system is read or needed.
 //
-// Two commands (manifest.json "menu"):
-//   main  — builds a 2-mode parent, a single-mode "primitives" parent and four extensions,
-//           then runs every probe. Run it once, in a new empty file.
-//   partb — optional, run in a SECOND file: extends the first file's published collection.
+// Three commands (manifest.json "menu"):
+//   main     — builds two parents and four extensions, then runs every probe. Run it once,
+//              in a new empty file.
+//   existing — fallback, read-only: probes extensions already in the file, e.g. ones made
+//              by hand when `main` couldn't create them through the API.
+//   partb    — optional, run in a SECOND file: extends the first file's published collection.
 //
 // Design rules:
 //   - Every step is a probe that runs in isolation and records its error as data, so one
 //     wrong assumption about the API can't cost us the rest of the run.
-//   - Probes that change the file (mode/variable sync) run last, and the file is put back
-//     into its built state where possible, so the follow-up Scalar export sees clean data.
+//   - API-surface probes record which methods actually exist, so a wrong call can be
+//     corrected from the same run's results instead of needing another run.
+//   - Probes that change the file run last, and the file is put back where possible, so the
+//     follow-up Scalar export sees clean data.
 
-const FIXTURE_VERSION = 2;
+const FIXTURE_VERSION = 3;
 const PARENT_NAME = 'ExtColl Parent';
 const SINGLE_NAME = 'ExtColl Primitives';
+const WATCH_CAP = 60; // most variables resolved per context by the read-only fallback
 
-const probes = {}; // name -> { ok: true, data } | { ok: false, error }
+const probes = {}; // name -> { ok, ms, data } | { ok: false, ms, error, errorType }
+const runInfo = { startedAt: Date.now(), panelUserAgent: '__unavailable__' };
 
 function message(e) {
   return String((e && e.message) || e);
 }
 
 async function probe(name, fn) {
+  const t0 = Date.now();
   try {
-    probes[name] = { ok: true, data: await fn() };
+    probes[name] = { ok: true, ms: 0, data: await fn() };
   } catch (e) {
-    probes[name] = { ok: false, error: message(e) };
+    probes[name] = { ok: false, ms: 0, error: message(e), errorType: (e && e.name) || typeof e };
   }
+  probes[name].ms = Date.now() - t0;
   return probes[name];
 }
 
@@ -81,6 +89,69 @@ const modeIdByName = (coll, name) => {
   return m ? m.modeId : null;
 };
 const overridesFor = (ext, variableId) => plain((ext.variableOverrides || {})[variableId]);
+const present = (pairs) => pairs.filter(([, x]) => x);
+
+// ---------- API surface ----------
+
+// The members each object should have, per the docs. Checked by name so a renamed or
+// missing method shows up as data, not as a mystery failure.
+const EXPECTED = {
+  variablesApi: [
+    'createVariableCollection',
+    'createVariable',
+    'getLocalVariableCollectionsAsync',
+    'getLocalVariablesAsync',
+    'getVariableByIdAsync',
+    'getVariableCollectionByIdAsync',
+    'extendLibraryCollectionByKeyAsync',
+    'importVariableByKeyAsync',
+    'setBoundVariableForPaint',
+    'createVariableAlias',
+  ],
+  teamLibrary: ['getAvailableLibraryVariableCollectionsAsync', 'getVariablesInLibraryCollectionAsync'],
+  collection: ['extend', 'addMode', 'removeMode', 'renameMode', 'remove', 'isExtension', 'key', 'defaultModeId'],
+  extension: [
+    'extend',
+    'addMode',
+    'removeMode',
+    'renameMode',
+    'removeOverridesForVariable',
+    'remove',
+    'isExtension',
+    'parentVariableCollectionId',
+    'rootVariableCollectionId',
+    'variableOverrides',
+    'defaultModeId',
+  ],
+  variable: ['setValueForMode', 'valuesByModeForCollectionAsync', 'resolveForConsumer', 'remove', 'valuesByMode'],
+  frame: ['setExplicitVariableModeForCollection', 'clearExplicitVariableModeForCollection', 'explicitVariableModes'],
+};
+const OBJECT_PROTO = new Set(Object.getOwnPropertyNames(Object.prototype));
+
+function surface(obj, expected) {
+  if (!obj) return null;
+  const members = read(() => {
+    const names = new Set();
+    let p = obj;
+    for (let depth = 0; p && depth < 6; depth++) {
+      for (const n of Object.getOwnPropertyNames(p)) if (!OBJECT_PROTO.has(n)) names.add(n);
+      p = Object.getPrototypeOf(p);
+    }
+    return Array.from(names).sort();
+  });
+  const expectedTypes = {};
+  for (const n of expected) expectedTypes[n] = read(() => typeof obj[n]);
+  return { members, expected: expectedTypes };
+}
+
+async function probeFigmaSurface() {
+  await probe('api-surface.figma', async () => ({
+    variables: surface(figma.variables, EXPECTED.variablesApi),
+    teamLibrary: read(() => surface(figma.teamLibrary, EXPECTED.teamLibrary)),
+  }));
+}
+
+// ---------- Dumps ----------
 
 function dumpCollection(c) {
   return {
@@ -90,11 +161,9 @@ function dumpCollection(c) {
     remote: read(() => c.remote),
     defaultModeId: read(() => c.defaultModeId),
     hiddenFromPublishing: read(() => c.hiddenFromPublishing),
-    modes: c.modes.map((m) => ({
-      modeId: m.modeId,
-      name: m.name,
-      parentModeId: read(() => m.parentModeId),
-    })),
+    modes: read(() =>
+      c.modes.map((m) => ({ modeId: m.modeId, name: m.name, parentModeId: read(() => m.parentModeId) })),
+    ),
     variableIds: read(() => plain(c.variableIds)),
     isExtension: read(() => c.isExtension),
     parentVariableCollectionId: read(() => c.parentVariableCollectionId),
@@ -112,6 +181,9 @@ function dumpVariable(v) {
     variableCollectionId: v.variableCollectionId,
     resolvedType: v.resolvedType,
     scopes: read(() => plain(v.scopes)),
+    description: read(() => v.description),
+    hiddenFromPublishing: read(() => v.hiddenFromPublishing),
+    codeSyntax: read(() => plain(v.codeSyntax)),
     valuesByMode: read(() => plain(v.valuesByMode)),
   };
 }
@@ -193,8 +265,9 @@ async function existingCollectionNames() {
 
 // ---------- Part A: main test ----------
 
-// A 2-mode "theme" parent. Primitives and semantics share it, plus `link`, whose
-// override in Acme re-points it across collections.
+// A 2-mode "theme" parent. Primitives and semantics share it, plus `link`, whose override
+// in Acme re-points it across collections, and (added later) `brand`, which aliases into the
+// separate primitives collection the way real systems are usually built.
 function buildParent() {
   const coll = figma.variables.createVariableCollection(PARENT_NAME);
   const light = coll.modes[0].modeId;
@@ -256,7 +329,10 @@ function setOverride(ext, variable, parentModeId, value) {
   variable.setValueForMode(m.modeId, typeof value === 'function' ? value() : value);
 }
 
+const FALLBACK_HINT = 'Follow "If the panel sends you here" in the README, then send both results files.';
+
 async function runMain() {
+  await probeFigmaSurface();
   await probe('preflight.existing-collections (should be empty)', existingCollectionNames);
 
   let main = null;
@@ -266,13 +342,27 @@ async function runMain() {
   });
   if (!b.ok) {
     return {
-      blocker:
-        'Could not build the parent collection: ' +
-        b.error +
-        ' — a plan limited to one mode per collection cannot run this test.',
+      blocker: /limited to/i.test(b.error)
+        ? 'Could not build the parent collection: ' + b.error + ' — a plan limited to one mode per collection cannot run this test.'
+        : 'Could not build the parent collection: ' + b.error + '.',
     };
   }
   const { coll: parent, light, dark, V } = main;
+
+  await probe('api-surface.collection', async () => surface(parent, EXPECTED.collection));
+  await probe('api-surface.variable', async () => surface(V['space/medium'], EXPECTED.variable));
+  await probe('api-surface.frame', async () => {
+    const f = figma.createFrame();
+    try {
+      return surface(f, EXPECTED.frame);
+    } finally {
+      try {
+        f.remove();
+      } catch (e) {
+        // ignore
+      }
+    }
+  });
 
   let single = null;
   await probe('build.single-mode-parent', async () => {
@@ -289,6 +379,15 @@ async function runMain() {
     return single.P[name];
   };
 
+  // Real topology: a theme variable aliasing into a separate primitives collection.
+  await probe('build.cross-collection alias in parent (brand → primitives)', async () => {
+    const brand = figma.variables.createVariable('color/semantic/brand', parent, 'COLOR');
+    brand.setValueForMode(light, alias(p('brand/red-500')));
+    brand.setValueForMode(dark, alias(p('brand/red-900')));
+    V['color/semantic/brand'] = brand;
+    return dumpVariable(brand);
+  });
+
   let acme = null;
   const a = await probe('extend.acme', async () => {
     acme = parent.extend('Acme');
@@ -296,9 +395,12 @@ async function runMain() {
   });
   if (!a.ok) {
     return {
-      blocker: 'Could not create an extended collection: ' + a.error + ' — this test needs an Enterprise plan.',
+      blocker: /enterprise/i.test(a.error)
+        ? 'Could not create an extended collection: ' + a.error + ' — this test needs an Enterprise plan.'
+        : 'Could not create an extended collection through the API: ' + a.error + '. ' + FALLBACK_HINT,
     };
   }
+  await probe('api-surface.extension', async () => surface(acme, EXPECTED.extension));
 
   // Acme: one probe per case, so a failure in one doesn't hide the others.
   const acmeRows = [
@@ -341,20 +443,31 @@ async function runMain() {
     ['brand/name: Light only (string)', 'brand/name', [[light, 'Acme']]],
     ['brand/tagline: Light only (reset later)', 'brand/tagline', [[light, 'Acme tagline']]],
   ];
+  let failedOverrides = 0;
   for (const [label, varName, sets] of acmeRows) {
-    await probe('acme.override ' + label, async () => {
+    const r = await probe('acme.override ' + label, async () => {
       for (const [parentModeId, value] of sets) setOverride(acme, v(varName), parentModeId, value);
       return overridesFor(acme, v(varName).id);
     });
+    if (!r.ok) failedOverrides++;
   }
+  const notice =
+    failedOverrides === acmeRows.length ? 'Overrides could not be set through the API. ' + FALLBACK_HINT : null;
+
+  // Creating an extension and overriding in it are separate probes, so if overrides can't be
+  // set, each extension's structure is still recorded.
 
   // A second brand off the same parent: are its overrides independent of Acme's?
   let beta = null;
   await probe('extend.beta (second brand)', async () => {
     beta = parent.extend('Beta');
+    return dumpCollection(beta);
+  });
+  await probe('beta.override space/medium + brand/name (Light)', async () => {
+    if (!beta) throw new Error('skipped: Beta unavailable');
     setOverride(beta, v('space/medium'), light, 20);
     setOverride(beta, v('brand/name'), light, 'Beta');
-    return dumpCollection(beta);
+    return { spaceMedium: overridesFor(beta, v('space/medium').id), brandName: overridesFor(beta, v('brand/name').id) };
   });
 
   // An extension of an extension. The mode is chosen by name, because whether its modes
@@ -362,10 +475,14 @@ async function runMain() {
   let sub = null;
   await probe('extend.chain (Acme Sub extends Acme)', async () => {
     sub = acme.extend('Acme Sub');
+    return dumpCollection(sub);
+  });
+  await probe('chain.override brand/name (Light)', async () => {
+    if (!sub) throw new Error('skipped: chain unavailable');
     const subLight = modeIdByName(sub, 'Light');
     if (!subLight) throw new Error('chain has no mode named Light');
     v('brand/name').setValueForMode(subLight, 'Acme Sub');
-    return dumpCollection(sub);
+    return overridesFor(sub, v('brand/name').id);
   });
 
   // An extension of the single-mode parent.
@@ -373,10 +490,21 @@ async function runMain() {
   await probe('extend.single-mode (Primitives Acme)', async () => {
     if (!single) throw new Error('skipped: single-mode parent unavailable');
     primsAcme = single.coll.extend('Primitives Acme');
+    return dumpCollection(primsAcme);
+  });
+  await probe('single-mode.override red-500, size/base, accent-alias', async () => {
+    if (!primsAcme) throw new Error('skipped: Primitives Acme unavailable');
     setOverride(primsAcme, p('brand/red-500'), single.mode, rgb(0.8, 0.1, 0.5));
     setOverride(primsAcme, p('size/base'), single.mode, 18);
     setOverride(primsAcme, p('brand/accent-alias'), single.mode, () => alias(p('brand/red-500')));
-    return dumpCollection(primsAcme);
+    return plain(primsAcme.variableOverrides);
+  });
+
+  // How an adapter would reach an extension and its variables: by id.
+  await probe('lookup-by-id', async () => {
+    const ext = await figma.variables.getVariableCollectionByIdAsync(acme.id);
+    const variable = await figma.variables.getVariableByIdAsync(v('color/semantic/accent').id);
+    return { extension: ext ? dumpCollection(ext) : null, variable: variable ? dumpVariable(variable) : null };
   });
 
   await probe('snapshot.collections', snapshotCollections);
@@ -405,22 +533,23 @@ async function runMain() {
   // What a consumer sees when pinned to a mode — the alias-through-override question.
   // parent/Light vs parent/Dark doubles as a control: accent differs between them by design.
   await probe('consumer-resolution', async () => {
-    const themeWatch = [
+    const themeWatch = present([
       ['text (aliases blue-900)', V['color/semantic/text']],
       ['accent', V['color/semantic/accent']],
       ['link (re-pointed alias)', V['color/semantic/link']],
+      ['brand (aliases primitives)', V['color/semantic/brand']],
       ['border', V['color/semantic/border']],
       ['blue-900', V['color/primitive/blue-900']],
       ['surface', V['color/semantic/surface']],
       ['space/medium', V['space/medium']],
       ['brand/name', V['brand/name']],
-    ];
+    ]);
     const primsWatch = single
-      ? [
+      ? present([
           ['red-500', single.P['brand/red-500']],
           ['accent-alias', single.P['brand/accent-alias']],
           ['size/base', single.P['size/base']],
-        ]
+        ])
       : [];
     const acmeLight = modeIdByName(acme, 'Light');
     const primsMode = primsAcme && primsAcme.modes[0] && primsAcme.modes[0].modeId;
@@ -448,7 +577,60 @@ async function runMain() {
     return { before, after };
   });
 
-  // ----- Probes below change the file. They run last. -----
+  // ----- Probes below change the file. They run last and tidy up after themselves. -----
+
+  // What can an extension do on its own? The docs say it can't add modes or variables; if
+  // it can, the adapter has to handle extension-owned data.
+  await probe('extension-capability.rename-own-mode', async () => {
+    const id = modeIdByName(acme, 'Light');
+    if (!id) throw new Error('no Acme mode named Light');
+    acme.renameMode(id, 'Acme Light');
+    const after = { acme: plain(acme.modes), parent: plain(parent.modes) };
+    let restored = 'restored to Light';
+    try {
+      acme.renameMode(id, 'Light');
+    } catch (e) {
+      restored = { error: message(e) };
+    }
+    return { after, restored };
+  });
+  await probe('extension-capability.add-own-mode (expected not allowed)', async () => {
+    let id;
+    try {
+      id = acme.addMode('Acme only');
+    } catch (e) {
+      return { allowed: false, error: message(e) };
+    }
+    const modes = plain(acme.modes);
+    let cleanup = 'removed';
+    try {
+      acme.removeMode(id);
+    } catch (e) {
+      cleanup = { error: message(e) };
+    }
+    return { allowed: true, newModeId: id, modes, cleanup };
+  });
+  await probe('extension-capability.create-own-variable (expected not allowed)', async () => {
+    let own;
+    try {
+      own = figma.variables.createVariable('acme/own', acme, 'FLOAT');
+    } catch (e) {
+      return { allowed: false, error: message(e) };
+    }
+    const result = {
+      allowed: true,
+      variable: dumpVariable(own),
+      inAcmeVariableIds: read(() => acme.variableIds.includes(own.id)),
+      inParentVariableIds: read(() => parent.variableIds.includes(own.id)),
+    };
+    try {
+      own.remove();
+      result.cleanup = 'removed';
+    } catch (e) {
+      result.cleanup = { error: message(e) };
+    }
+    return result;
+  });
 
   // Does an extension pick up a variable added to the parent, and drop it (and its
   // override) when the variable is deleted? Stale override keys would trip a reader.
@@ -458,8 +640,13 @@ async function runMain() {
     temp.setValueForMode(dark, 1);
     const id = temp.id;
     const afterAdd = { inAcmeVariableIds: acme.variableIds.includes(id), acmeEffective: await valuesFor(temp, acme) };
-    setOverride(acme, temp, light, 2);
-    const afterOverride = { acmeOverride: overridesFor(acme, id) };
+    let afterOverride;
+    try {
+      setOverride(acme, temp, light, 2);
+      afterOverride = { acmeOverride: overridesFor(acme, id) };
+    } catch (e) {
+      afterOverride = { overrideError: message(e) }; // keep going: the delete is still worth seeing
+    }
     temp.remove();
     const afterDelete = { inAcmeVariableIds: acme.variableIds.includes(id), staleOverride: overridesFor(acme, id) };
     return { afterAdd, afterOverride, afterDelete };
@@ -486,8 +673,15 @@ async function runMain() {
   await probe('mode-sync.delete-parent-mode', async () => {
     if (!addedModeId) throw new Error('skipped: add-parent-mode failed');
     const doomed = acme.modes.find((m) => m.parentModeId === addedModeId);
-    if (doomed) v('brand/name').setValueForMode(doomed.modeId, 'Acme high contrast');
-    const before = { overrideOnDoomedMode: Boolean(doomed), brandNameOverrides: overridesFor(acme, v('brand/name').id) };
+    let overrideOnDoomedMode = doomed ? true : 'Acme has no mode for the added parent mode';
+    if (doomed) {
+      try {
+        v('brand/name').setValueForMode(doomed.modeId, 'Acme high contrast');
+      } catch (e) {
+        overrideOnDoomedMode = { error: message(e) }; // keep going: the deletion is still worth seeing
+      }
+    }
+    const before = { overrideOnDoomedMode, brandNameOverrides: overridesFor(acme, v('brand/name').id) };
     parent.removeMode(addedModeId);
     const after = { modes: modesOf(), brandNameOverrides: overridesFor(acme, v('brand/name').id) };
     const orphan = acme.modes.find((m) => m.parentModeId === addedModeId);
@@ -508,12 +702,60 @@ async function runMain() {
   });
 
   await probe('snapshot.collections.final', snapshotCollections);
+  return { blocker: null, notice };
+}
+
+// ---------- Fallback: probe existing extensions (read-only) ----------
+
+async function runExisting() {
+  await probeFigmaSurface();
+  let extensions = [];
+  await probe('existing.collections', async () => {
+    const all = await figma.variables.getLocalVariableCollectionsAsync();
+    extensions = all.filter((c) => read(() => c.isExtension) === true);
+    return all.map(dumpCollection);
+  });
+  if (!extensions.length) {
+    return {
+      blocker: 'No extended collections found in this file. Create one first (see "If the panel sends you here" in the README).',
+    };
+  }
+  await probe('api-surface.extension', async () => surface(extensions[0], EXPECTED.extension));
+  await probe('snapshot.variables', snapshotVariables);
+
+  for (const ext of extensions) {
+    const tag = 'existing[' + ext.name + ']';
+    const vars = [];
+    await probe(tag + '.parent-by-id', async () => {
+      const parentColl = await figma.variables.getVariableCollectionByIdAsync(ext.parentVariableCollectionId);
+      return parentColl ? dumpCollection(parentColl) : null;
+    });
+    await probe(tag + '.variables-by-id', async () => {
+      for (const id of ext.variableIds) {
+        const variable = await figma.variables.getVariableByIdAsync(id);
+        if (variable) vars.push(variable);
+      }
+      return vars.map(dumpVariable);
+    });
+    await probe(tag + '.effective-values', async () => {
+      const out = {};
+      for (const variable of vars) out[variable.name] = await readAsync(() => valuesFor(variable, ext));
+      return out;
+    });
+    await probe(tag + '.consumer-resolution', async () => {
+      const watch = vars.slice(0, WATCH_CAP).map((variable) => [variable.name, variable]);
+      const out = { truncated: vars.length > WATCH_CAP };
+      for (const m of ext.modes) out[ext.name + '/' + m.name] = await resolveIn([[ext, m.modeId]], watch);
+      return out;
+    });
+  }
   return { blocker: null };
 }
 
 // ---------- Part B: remote parent (second file) ----------
 
 async function runPartB() {
+  await probeFigmaSurface();
   await probe('partb.preflight.existing-collections (should be empty)', existingCollectionNames);
 
   let libs = [];
@@ -537,6 +779,7 @@ async function runPartB() {
     return dumpCollection(ext);
   });
   if (!e.ok) return { blocker: 'Could not extend the library collection: ' + e.error };
+  await probe('api-surface.extension (remote parent)', async () => surface(ext, EXPECTED.extension));
 
   // How an adapter would reach the remote parent and its variables: by id.
   await probe('partb.parent-by-id', async () => {
@@ -593,6 +836,10 @@ async function runPartB() {
     lv('color/primitive/blue-900').setValueForMode(modeOf('Dark'), rgb(0.9, 0.4, 0.4));
     return overridesFor(ext, lv('color/primitive/blue-900').id);
   });
+  await probe('partb.override accent: Light → alias to a library variable', async () => {
+    lv('color/semantic/accent').setValueForMode(modeOf('Light'), alias(lv('color/primitive/blue-500')));
+    return overridesFor(ext, lv('color/semantic/accent').id);
+  });
 
   await probe('partb.snapshot.collections', snapshotCollections);
   await probe('partb.snapshot.variables', snapshotVariables);
@@ -604,7 +851,14 @@ async function runPartB() {
     return out;
   });
   await probe('partb.consumer-resolution', async () => {
-    const watch = ['color/semantic/text', 'color/semantic/accent', 'space/medium', 'brand/name']
+    const watch = [
+      'color/semantic/text',
+      'color/semantic/accent',
+      'color/semantic/link',
+      'color/semantic/brand',
+      'space/medium',
+      'brand/name',
+    ]
       .filter((n) => byName[n])
       .map((n) => [n, byName[n]]);
     const out = {};
@@ -618,18 +872,31 @@ async function runPartB() {
 
 // ---------- Entry ----------
 
+const COMMANDS = {
+  main: { run: runMain, label: 'Part A (main test)', fileName: 'extcoll-fixture-partA.json' },
+  existing: { run: runExisting, label: 'Fallback (existing extensions)', fileName: 'extcoll-fixture-existing.json' },
+  partb: { run: runPartB, label: 'Part B (remote parent)', fileName: 'extcoll-fixture-partB.json' },
+};
+
 let ready = Promise.resolve();
 
-async function deliver(label, extra) {
+async function deliver(cmd, extra) {
+  await ready; // first, so the panel's user agent (Figma version) is in before meta is built
   const results = {
     meta: {
       fixtureVersion: FIXTURE_VERSION,
-      label,
+      command: read(() => figma.command),
+      label: cmd.label,
+      ranAt: new Date(runInfo.startedAt).toISOString(),
+      durationMs: Date.now() - runInfo.startedAt,
       editorType: read(() => figma.editorType),
+      figmaMode: read(() => figma.mode),
       apiVersion: read(() => figma.apiVersion),
-      ranAt: new Date().toISOString(),
+      documentColorProfile: read(() => figma.root.documentColorProfile),
+      panelUserAgent: runInfo.panelUserAgent, // carries the Figma app version
     },
     blocker: extra.blocker || null,
+    notice: extra.notice || null,
     fatal: extra.fatal || null,
     probes,
   };
@@ -639,32 +906,35 @@ async function deliver(label, extra) {
   } catch (e) {
     json = safeStringify(results);
   }
-  await ready;
   figma.ui.postMessage({
     type: 'results',
-    label,
+    label: cmd.label,
+    fileName: cmd.fileName,
     blocker: results.blocker || results.fatal,
+    notice: results.notice,
     summary: Object.keys(probes).map((name) => ({ name, ok: probes[name].ok })),
     json,
   });
 }
 
 async function main() {
-  figma.showUI(__html__, { width: 620, height: 560, themeColors: true });
+  figma.showUI(__html__, { width: 620, height: 580, themeColors: true });
   ready = new Promise((resolve) => {
     figma.ui.onmessage = (msg) => {
-      if (msg && msg.type === 'ready') resolve();
+      if (msg && msg.type === 'ready') {
+        if (msg.userAgent) runInfo.panelUserAgent = String(msg.userAgent);
+        resolve();
+      }
       if (msg && msg.type === 'close') figma.closePlugin();
     };
     if (typeof setTimeout === 'function') setTimeout(resolve, 4000); // never wait forever on the panel
   });
-  const part = figma.command === 'partb' ? 'Part B (remote parent)' : 'Part A (main test)';
+  const cmd = COMMANDS[figma.command] || COMMANDS.main;
   try {
-    const extra = figma.command === 'partb' ? await runPartB() : await runMain();
-    await deliver(part, extra);
+    await deliver(cmd, await cmd.run());
   } catch (e) {
     // Never hang silently: report the unexpected error in the panel instead.
-    await deliver(part, { fatal: 'Unexpected error: ' + message(e) });
+    await deliver(cmd, { fatal: 'Unexpected error: ' + message(e) });
   }
 }
 

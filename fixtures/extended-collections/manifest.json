@@ -1,6 +1,6 @@
 {
-  "name": "Scalar Fixture v2 — Extended Collections",
-  "id": "scalar-ext-collections-fixture-v2",
+  "name": "Scalar Fixture v3 — Extended Collections",
+  "id": "scalar-ext-collections-fixture-v3",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",
@@ -13,6 +13,7 @@
   },
   "menu": [
     { "name": "1. Run main test", "command": "main" },
+    { "name": "2. Probe existing extensions (only if the panel asks)", "command": "existing" },
     { "name": "B. Remote parent (optional, in a second file)", "command": "partb" }
   ]
 }
