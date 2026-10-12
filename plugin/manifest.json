@@ -8,7 +8,7 @@
   "documentAccess": "dynamic-page",
   "capabilities": [],
   "networkAccess": {
-    "allowedDomains": ["none"],
-    "reasoning": "v1 exports locally (download / clipboard). No network access needed."
+    "allowedDomains": ["*"],
+    "reasoning": "Optional git sync opens pull/merge requests on the one GitHub or GitLab host the user enters in Settings, which can be a company-run server on its own domain, so domains can't be listed in advance. The plugin only contacts that host, over HTTPS. Exporting, copying and downloading use no network."
   }
 }

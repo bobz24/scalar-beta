@@ -18,6 +18,7 @@
     }
     const irCollections = collections.map((collection) => ({
       id: collection.id,
+      ...keyOf(collection),
       name: collection.name,
       modes: collection.modes.map((mode) => ({ id: mode.modeId, name: mode.name })),
       defaultModeId: collection.defaultModeId,
@@ -28,9 +29,13 @@
     return {
       collections: irCollections,
       paintStyles: paintStyles.map((s) => readPaintStyle(s, space)),
-      textStyles: textStyles.map(readTextStyle),
-      effectStyles: effectStyles.map((s) => readEffectStyle(s, space))
+      textStyles: textStyles.map((s) => readTextStyle(s, space)),
+      effectStyles: effectStyles.map((s) => readEffectStyle(s, space)),
+      fileName: figma.root.name
     };
+  }
+  function keyOf(item) {
+    return typeof item.key === "string" && item.key !== "" ? { key: item.key } : {};
   }
   function readVariable(variable, localVariableIds, space) {
     const valuesByMode = {};
@@ -93,6 +98,7 @@
   function readPaintStyle(style, space) {
     return {
       id: style.id,
+      ...keyOf(style),
       name: style.name,
       description: style.description,
       // Figma renders later paints on top; reverse so IR paints[0] is the visually-top fill
@@ -131,13 +137,14 @@
         return { kind: "unsupported", paintType: paint.type, raw: paint };
     }
   }
-  function readTextStyle(style) {
+  function readTextStyle(style, space) {
     const ls = style.letterSpacing;
     const lh = style.lineHeight;
     const raw = style.fontName;
     const font = raw && raw !== figma.mixed ? raw : null;
     return {
       id: style.id,
+      ...keyOf(style),
       name: style.name,
       description: style.description,
       props: {
@@ -158,15 +165,33 @@
           hangingPunctuation: style.hangingPunctuation,
           hangingList: style.hangingList,
           leadingTrim: style.leadingTrim,
-          textWrapStyle: style.textWrapStyle
+          textWrapStyle: style.textWrapStyle,
+          ...readDecorationDetails(style, space)
         },
         boundVariables: readBoundVariables(style.boundVariables)
+      }
+    };
+  }
+  function readDecorationDetails(style, space) {
+    const { textDecorationStyle, textDecorationOffset, textDecorationThickness, textDecorationColor } = style;
+    if (!textDecorationStyle || !textDecorationOffset || !textDecorationThickness || !textDecorationColor) return {};
+    const paint = textDecorationColor.value;
+    const colorVarId = paint === "AUTO" ? void 0 : boundColorId(paint.boundVariables);
+    return {
+      decoration: {
+        style: textDecorationStyle,
+        offset: { ...textDecorationOffset },
+        thickness: { ...textDecorationThickness },
+        color: paint === "AUTO" ? "AUTO" : { r: paint.color.r, g: paint.color.g, b: paint.color.b, a: paint.opacity ?? 1, space },
+        ...colorVarId ? { colorVarId } : {},
+        skipInk: style.textDecorationSkipInk ?? true
       }
     };
   }
   function readEffectStyle(style, space) {
     return {
       id: style.id,
+      ...keyOf(style),
       name: style.name,
       description: style.description,
       // Visible effects only (invisible ones don't render), in Figma's order — a shadow stack
@@ -238,8 +263,46 @@
   function readRgba(c, space) {
     return { r: c.r, g: c.g, b: c.b, a: "a" in c ? c.a : 1, space };
   }
+  const SETTINGS_KEY = "git-sync/settings";
+  const TOKEN_KEY = "git-sync/token";
+  async function loadGitSync() {
+    const [settings, token] = await Promise.all([
+      figma.clientStorage.getAsync(SETTINGS_KEY),
+      figma.clientStorage.getAsync(TOKEN_KEY)
+    ]);
+    return {
+      // Anything unreadable (an older shape, a manual edit) is treated as not set up.
+      settings: isSettings(settings) ? settings : null,
+      token: typeof token === "string" && token !== "" ? token : null
+    };
+  }
+  async function saveGitSync(settings, token) {
+    const previous = (await loadGitSync()).settings;
+    const moved = previous !== null && (previous.provider !== settings.provider || previous.host !== settings.host);
+    const next = token === void 0 && moved ? null : token;
+    await figma.clientStorage.setAsync(SETTINGS_KEY, settings);
+    if (next === null) await figma.clientStorage.deleteAsync(TOKEN_KEY);
+    else if (next !== void 0) await figma.clientStorage.setAsync(TOKEN_KEY, next);
+  }
+  function isSettings(value) {
+    if (typeof value !== "object" || value === null) return false;
+    const v = value;
+    return (v.provider === "github" || v.provider === "gitlab") && typeof v.host === "string" && typeof v.repo === "string" && typeof v.baseBranch === "string" && typeof v.targetDir === "string";
+  }
   function post(message) {
     figma.ui.postMessage(message);
+  }
+  async function postGitSync(error) {
+    try {
+      const stored = await loadGitSync();
+      post(error === void 0 ? { type: "settings/loaded", stored } : { type: "settings/loaded", stored, error });
+    } catch (err) {
+      post({
+        type: "settings/loaded",
+        stored: { settings: null, token: null },
+        error: error ?? (err instanceof Error ? err.message : String(err))
+      });
+    }
   }
   figma.showUI(__html__, { width: 500, height: 720, themeColors: true });
   figma.ui.onmessage = async (message) => {
@@ -247,7 +310,18 @@
       switch (message.type) {
         case "ui/ready":
           post({ type: "sandbox/ready", fileName: figma.root.name });
+          await postGitSync();
           return;
+        case "settings/save": {
+          let error;
+          try {
+            await saveGitSync(message.settings, message.token);
+          } catch (err) {
+            error = err instanceof Error ? err.message : String(err);
+          }
+          await postGitSync(error);
+          return;
+        }
         case "export/request": {
           post({ type: "export/ir", ir: await readDocument() });
           return;
