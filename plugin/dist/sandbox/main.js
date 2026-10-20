@@ -24,7 +24,8 @@
       defaultModeId: collection.defaultModeId,
       variables: (variablesByCollection.get(collection.id) ?? []).map(
         (v) => readVariable(v, localVariableIds, space)
-      )
+      ),
+      ...extensionOf(collection)
     }));
     return {
       collections: irCollections,
@@ -33,6 +34,11 @@
       effectStyles: effectStyles.map((s) => readEffectStyle(s, space)),
       fileName: figma.root.name
     };
+  }
+  function extensionOf(collection) {
+    if (collection.isExtension !== true) return {};
+    const parent = collection.parentVariableCollectionId;
+    return { isExtension: true, ...typeof parent === "string" ? { parentCollectionId: parent } : {} };
   }
   function keyOf(item) {
     return typeof item.key === "string" && item.key !== "" ? { key: item.key } : {};
@@ -284,6 +290,10 @@
     if (next === null) await figma.clientStorage.deleteAsync(TOKEN_KEY);
     else if (next !== void 0) await figma.clientStorage.setAsync(TOKEN_KEY, next);
   }
+  async function clearGitSync() {
+    await figma.clientStorage.deleteAsync(SETTINGS_KEY);
+    await figma.clientStorage.deleteAsync(TOKEN_KEY);
+  }
   function isSettings(value) {
     if (typeof value !== "object" || value === null) return false;
     const v = value;
@@ -316,6 +326,16 @@
           let error;
           try {
             await saveGitSync(message.settings, message.token);
+          } catch (err) {
+            error = err instanceof Error ? err.message : String(err);
+          }
+          await postGitSync(error);
+          return;
+        }
+        case "settings/clear": {
+          let error;
+          try {
+            await clearGitSync();
           } catch (err) {
             error = err instanceof Error ? err.message : String(err);
           }
