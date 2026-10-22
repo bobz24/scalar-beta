@@ -35,6 +35,17 @@
       fileName: figma.root.name
     };
   }
+  async function readFileKeys() {
+    const lists = await Promise.all([
+      figma.variables.getLocalVariableCollectionsAsync(),
+      figma.getLocalPaintStylesAsync(),
+      figma.getLocalTextStylesAsync(),
+      figma.getLocalEffectStylesAsync()
+    ]);
+    const keys = /* @__PURE__ */ new Set();
+    for (const list of lists) for (const item of list) if (keyOf(item).key !== void 0) keys.add(item.key);
+    return [...keys].sort();
+  }
   function extensionOf(collection) {
     if (collection.isExtension !== true) return {};
     const parent = collection.parentVariableCollectionId;
@@ -269,30 +280,105 @@
   function readRgba(c, space) {
     return { r: c.r, g: c.g, b: c.b, a: "a" in c ? c.a : 1, space };
   }
-  const SETTINGS_KEY = "git-sync/settings";
-  const TOKEN_KEY = "git-sync/token";
-  async function loadGitSync() {
-    const [settings, token] = await Promise.all([
-      figma.clientStorage.getAsync(SETTINGS_KEY),
-      figma.clientStorage.getAsync(TOKEN_KEY)
-    ]);
+  const SETUPS_KEY = "git-sync/setups";
+  const LEGACY_SETTINGS_KEY = "git-sync/settings";
+  const LEGACY_TOKEN_KEY = "git-sync/token";
+  async function loadGitSync(fileKeys) {
+    const setups = await readSetups();
+    const index = matchSetup(setups, fileKeys);
+    const own = index === -1 ? null : setups[index];
+    if (own !== null && !sameKeys(own.keys, fileKeys)) {
+      await writeSetups(setups.map((s, i) => i === index ? { ...s, keys: [...fileKeys] } : s));
+    }
     return {
-      // Anything unreadable (an older shape, a manual edit) is treated as not set up.
-      settings: isSettings(settings) ? settings : null,
-      token: typeof token === "string" && token !== "" ? token : null
+      settings: own?.settings ?? null,
+      token: own?.token ?? null,
+      savedTokens: savedTokenHosts(setups.filter((_, i) => i !== index)),
+      fileHasKeys: fileKeys.length > 0
     };
   }
-  async function saveGitSync(settings, token) {
-    const previous = (await loadGitSync()).settings;
-    const moved = previous !== null && (previous.provider !== settings.provider || previous.host !== settings.host);
-    const next = token === void 0 && moved ? null : token;
-    await figma.clientStorage.setAsync(SETTINGS_KEY, settings);
-    if (next === null) await figma.clientStorage.deleteAsync(TOKEN_KEY);
-    else if (next !== void 0) await figma.clientStorage.setAsync(TOKEN_KEY, next);
+  async function saveGitSync(fileKeys, settings, token) {
+    if (fileKeys.length === 0) throw new Error("This file has no variables or styles to sync yet.");
+    const setups = await readSetups();
+    const index = matchSetup(setups, fileKeys);
+    const previous = index === -1 ? null : setups[index];
+    const others = setups.filter((_, i) => i !== index);
+    let next;
+    if (token === void 0) {
+      const moved = previous !== null && !sameHost(previous.settings, settings);
+      next = moved ? null : previous?.token ?? null;
+    } else if (token === null || typeof token === "string") {
+      next = token === "" ? null : token;
+    } else {
+      next = reusableToken(others, settings);
+      if (next === null) throw new Error(`No saved token for ${settings.host}.`);
+    }
+    const reused = typeof token === "object" && token !== null;
+    const kept = reused ? others.filter((s) => !(s.keys.length === 0 && sameHost(s.settings, settings))) : others;
+    await writeSetups([...kept, { keys: [...fileKeys], settings, token: next }]);
   }
-  async function clearGitSync() {
-    await figma.clientStorage.deleteAsync(SETTINGS_KEY);
-    await figma.clientStorage.deleteAsync(TOKEN_KEY);
+  async function clearGitSync(fileKeys) {
+    const setups = await readSetups();
+    const index = matchSetup(setups, fileKeys);
+    if (index !== -1) await writeSetups(setups.filter((_, i) => i !== index));
+  }
+  function matchSetup(setups, fileKeys) {
+    const own = new Set(fileKeys);
+    let best = -1;
+    let bestOverlap = 0;
+    setups.forEach((setup, i) => {
+      const overlap = setup.keys.filter((key) => own.has(key)).length;
+      if (overlap > bestOverlap) {
+        best = i;
+        bestOverlap = overlap;
+      }
+    });
+    return best;
+  }
+  function reusableToken(setups, settings) {
+    for (let i = setups.length - 1; i >= 0; i--) {
+      const s = setups[i];
+      if (s.token !== null && sameHost(s.settings, settings)) return s.token;
+    }
+    return null;
+  }
+  function savedTokenHosts(setups) {
+    const seen = /* @__PURE__ */ new Map();
+    for (const { settings, token } of setups) {
+      if (token !== null) seen.set(`${settings.provider} ${settings.host}`, { provider: settings.provider, host: settings.host });
+    }
+    return [...seen.values()];
+  }
+  function sameHost(a, b) {
+    return a.provider === b.provider && a.host === b.host;
+  }
+  function sameKeys(a, b) {
+    return a.length === b.length && a.every((key, i) => key === b[i]);
+  }
+  async function readSetups() {
+    const raw = await figma.clientStorage.getAsync(SETUPS_KEY);
+    const setups = Array.isArray(raw) ? raw.filter(isSetup) : [];
+    return upgradeLegacy(setups);
+  }
+  async function writeSetups(setups) {
+    await figma.clientStorage.setAsync(SETUPS_KEY, setups);
+  }
+  async function upgradeLegacy(setups) {
+    const [settings, token] = await Promise.all([
+      figma.clientStorage.getAsync(LEGACY_SETTINGS_KEY),
+      figma.clientStorage.getAsync(LEGACY_TOKEN_KEY)
+    ]);
+    if (settings === void 0 && token === void 0) return setups;
+    const upgraded = isSettings(settings) && typeof token === "string" && token !== "" ? [...setups, { keys: [], settings, token }] : setups;
+    if (upgraded !== setups) await writeSetups(upgraded);
+    await figma.clientStorage.deleteAsync(LEGACY_SETTINGS_KEY);
+    await figma.clientStorage.deleteAsync(LEGACY_TOKEN_KEY);
+    return upgraded;
+  }
+  function isSetup(value) {
+    if (typeof value !== "object" || value === null) return false;
+    const v = value;
+    return Array.isArray(v.keys) && v.keys.every((key) => typeof key === "string") && isSettings(v.settings) && (v.token === null || typeof v.token === "string" && v.token !== "");
   }
   function isSettings(value) {
     if (typeof value !== "object" || value === null) return false;
@@ -303,13 +389,15 @@
     figma.ui.postMessage(message);
   }
   async function postGitSync(error) {
+    let fileKeys = [];
     try {
-      const stored = await loadGitSync();
+      fileKeys = await readFileKeys();
+      const stored = await loadGitSync(fileKeys);
       post(error === void 0 ? { type: "settings/loaded", stored } : { type: "settings/loaded", stored, error });
     } catch (err) {
       post({
         type: "settings/loaded",
-        stored: { settings: null, token: null },
+        stored: { settings: null, token: null, savedTokens: [], fileHasKeys: fileKeys.length > 0 },
         error: error ?? (err instanceof Error ? err.message : String(err))
       });
     }
@@ -325,7 +413,7 @@
         case "settings/save": {
           let error;
           try {
-            await saveGitSync(message.settings, message.token);
+            await saveGitSync(await readFileKeys(), message.settings, message.token);
           } catch (err) {
             error = err instanceof Error ? err.message : String(err);
           }
@@ -335,7 +423,7 @@
         case "settings/clear": {
           let error;
           try {
-            await clearGitSync();
+            await clearGitSync(await readFileKeys());
           } catch (err) {
             error = err instanceof Error ? err.message : String(err);
           }
