@@ -27,13 +27,120 @@
       ),
       ...extensionOf(collection)
     }));
+    const irPaintStyles = paintStyles.map((s) => readPaintStyle(s, space));
+    const irTextStyles = textStyles.map((s) => readTextStyle(s, space));
+    const irEffectStyles = effectStyles.map((s) => readEffectStyle(s, space));
+    const libraryVariables = await readLibraryVariables(
+      referencedIds(irCollections, irPaintStyles, irTextStyles, irEffectStyles),
+      localVariableIds,
+      space
+    );
     return {
       collections: irCollections,
-      paintStyles: paintStyles.map((s) => readPaintStyle(s, space)),
-      textStyles: textStyles.map((s) => readTextStyle(s, space)),
-      effectStyles: effectStyles.map((s) => readEffectStyle(s, space)),
-      fileName: figma.root.name
+      paintStyles: irPaintStyles,
+      textStyles: irTextStyles,
+      effectStyles: irEffectStyles,
+      fileName: figma.root.name,
+      ...libraryVariables.length > 0 ? { libraryVariables } : {}
     };
+  }
+  function referencedIds(collections, paintStyles, textStyles, effectStyles) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const collection of collections) {
+      for (const variable of collection.variables) for (const id of valueTargets(variable.valuesByMode)) ids.add(id);
+    }
+    for (const style of paintStyles) {
+      for (const paint of style.paints) {
+        if (paint.kind === "solid" && paint.colorVarId) ids.add(paint.colorVarId);
+        if (paint.kind === "gradient") {
+          for (const stop of paint.stops) if (stop.colorVarId) ids.add(stop.colorVarId);
+        }
+      }
+    }
+    for (const style of textStyles) {
+      for (const id of Object.values(style.props.boundVariables)) ids.add(id);
+      const decorationId = style.props.extras.decoration?.colorVarId;
+      if (decorationId) ids.add(decorationId);
+    }
+    for (const style of effectStyles) {
+      for (const effect of style.effects) {
+        if (effect.kind !== "unsupported") for (const id of Object.values(effect.boundVariables)) ids.add(id);
+      }
+    }
+    return ids;
+  }
+  function valueTargets(valuesByMode) {
+    const ids = [];
+    for (const value of Object.values(valuesByMode)) {
+      if (value.kind === "alias") ids.push(value.targetId);
+      if (value.kind === "composed-color") {
+        if (value.colorArg.kind === "alias") ids.push(value.colorArg.targetId);
+        if (value.opacityArg.kind === "alias") ids.push(value.opacityArg.targetId);
+      }
+    }
+    return ids;
+  }
+  async function readLibraryVariables(referenced, localVariableIds, space) {
+    const collections = /* @__PURE__ */ new Map();
+    const collectionOf = (id) => {
+      let pending = collections.get(id);
+      if (!pending) {
+        pending = readLibraryCollection(id);
+        collections.set(id, pending);
+      }
+      return pending;
+    };
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    let next = [...referenced].filter((id) => !localVariableIds.has(id));
+    while (next.length > 0) {
+      for (const id of next) seen.add(id);
+      const found = await Promise.all(next.map((id) => readLibraryVariable(id, localVariableIds, space, collectionOf)));
+      out.push(...found);
+      next = [
+        ...new Set(found.flatMap((v) => v.found ? valueTargets(v.valuesByMode) : []))
+      ].filter((id) => !localVariableIds.has(id) && !seen.has(id));
+    }
+    return out.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  }
+  async function readLibraryVariable(id, localVariableIds, space, collectionOf) {
+    let variable;
+    try {
+      variable = await figma.variables.getVariableByIdAsync(id);
+    } catch (err) {
+      return { id, found: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    if (!variable) return { id, found: false };
+    const valuesByMode = {};
+    for (const [modeId, raw] of Object.entries(variable.valuesByMode)) {
+      valuesByMode[modeId] = readValue(raw, variable.resolvedType, localVariableIds, space);
+    }
+    const collection = await collectionOf(variable.variableCollectionId);
+    return {
+      id,
+      found: true,
+      ...keyOf(variable),
+      name: variable.name,
+      resolvedType: variable.resolvedType,
+      scopes: [...variable.scopes],
+      collectionId: variable.variableCollectionId,
+      ...collection ? { collection } : {},
+      valuesByMode
+    };
+  }
+  async function readLibraryCollection(id) {
+    try {
+      const collection = await figma.variables.getVariableCollectionByIdAsync(id);
+      if (!collection) return void 0;
+      return {
+        ...keyOf(collection),
+        name: collection.name,
+        modes: collection.modes.map((mode) => ({ id: mode.modeId, name: mode.name })),
+        defaultModeId: collection.defaultModeId
+      };
+    } catch {
+      return void 0;
+    }
   }
   async function readFileKeys() {
     const lists = await Promise.all([

@@ -1,5 +1,5 @@
 {
-  "name": "Scalar (Beta)",
+  "name": "Scalar – DTCG Tokens",
   "id": "scalar-design-token-exporter",
   "api": "1.0.0",
   "main": "dist/sandbox/main.js",
