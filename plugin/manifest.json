@@ -1,10 +1,10 @@
 {
   "name": "Scalar – DTCG Tokens",
-  "id": "scalar-design-token-exporter",
+  "id": "1697219608469981089",
   "api": "1.0.0",
   "main": "dist/sandbox/main.js",
   "ui": "dist/ui/index.html",
-  "editorType": ["figma", "dev"],
+  "editorType": ["figma"],
   "documentAccess": "dynamic-page",
   "capabilities": [],
   "networkAccess": {
